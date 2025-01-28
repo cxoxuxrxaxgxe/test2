@@ -38,4 +38,74 @@ for filename in filenames:
     
     # Convert to DataFrame and append to the main dataset
     temp_df = pd.DataFrame(variables)
-    met_off
+    met_office_obs = pd.concat([met_office_obs, temp_df])
+
+# Remove duplicates and impossible values
+met_office_obs = met_office_obs.drop_duplicates(subset=["time", "platform_id"])
+met_office_obs = met_office_obs[met_office_obs["max_wind_gust"] > 0]
+
+# Unique values (for verification)
+print(f"Unique platforms: {met_office_obs['platform_id'].nunique()}")
+print(f"Unique storms: {met_office_obs['stormname'].nunique()}")
+
+# 2/7. Plotting the observation network
+# Define function to calculate the most frequent value
+def most_frequent(x):
+    return pd.Series(x).value_counts().idxmax()
+
+# Group by platform and calculate statistics
+platforms = (
+    met_office_obs.groupby("platform_id")
+    .agg(
+        NObs=("platform_id", "size"),
+        longitude=("longitude", most_frequent),
+        latitude=("latitude", most_frequent),
+        altitude=("altitude", most_frequent),
+        StationStart=("time", "min"),
+        StationEnd=("time", "max")
+    )
+    .reset_index()
+)
+
+# Visualization with folium
+map_osm = folium.Map(location=[50, 0], zoom_start=5)
+marker_cluster = MarkerCluster().add_to(map_osm)
+for _, row in platforms.iterrows():
+    folium.CircleMarker(
+        location=(row["latitude"], row["longitude"]),
+        radius=5,
+        color="blue",
+        fill=True,
+        fill_opacity=0.7,
+        tooltip=f"ID: {row['platform_id']}, NObs: {row['NObs']}"
+    ).add_to(marker_cluster)
+
+map_osm.save(os.path.join(dir_out, "GroundStations.html"))
+
+# 3/7. Study the distribution of observations
+from scipy.stats import kstest
+
+# Fit distributions and goodness-of-fit
+gusts = met_office_obs["max_wind_gust"].dropna()
+fits = {
+    "gamma": gamma.fit(gusts),
+    "lognorm": lognorm.fit(gusts, floc=0),
+    "genextreme": genextreme.fit(gusts)
+}
+
+# Goodness-of-fit statistics
+gof = {
+    dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
+    for dist, params in fits.items()
+}
+
+print(gof)
+
+# Plot distributions
+x = np.linspace(gusts.min(), gusts.max(), 1000)
+for dist, params in fits.items():
+    plt.plot(x, eval(dist).pdf(x, *params), label=dist)
+plt.hist(gusts, bins=50, density=True, alpha=0.5)
+plt.legend()
+plt.title("Fitted Distributions")
+plt.show()
