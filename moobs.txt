@@ -1,111 +1,320 @@
-# Libraries for data manipulation
-import pandas as pd
-import numpy as np
-import os
-import netCDF4 as nc
-from scipy.stats import genextreme, gamma, lognorm
-import matplotlib.pyplot as plt
-from scipy.optimize import minimize
 
-# Libraries for visualization
-import folium
-from folium.plugins import MarkerCluster
+# Step 4: Per-Station Statistical Testing
+# We'll calculate station-wise statistics, fit distributions, and check goodness-of-fit (GoF) for each station.
 
-# Directory settings
-dir_in = "C:/Users/a-diouf/OneDrive - AXA/EU-WS-ICM/1-Wind Observations/MetOffice Observations/axa_obs_253/"
-dir_out = "C:/Users/a-diouf/OneDrive - AXA/EU-WS-ICM/1-Wind Observations/Figures/"
+# Per-station statistical testing
+stations = met_office_obs.groupby("platform_id")
 
-# Initialize an empty DataFrame
-met_office_obs = pd.DataFrame()
+station_results = []
+for station_id, group in stations:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:  # Ensure enough data points for fitting
+        continue
 
-# Process all .nc files in the directory
-filenames = [f for f in os.listdir(dir_in) if f.endswith(".nc")]
-for filename in filenames:
-    # Open the NetCDF file
-    filepath = os.path.join(dir_in, filename)
-    dataset = nc.Dataset(filepath)
+    # Fit distributions
+    fits = {
+        "gamma": gamma.fit(gusts),
+        "lognorm": lognorm.fit(gusts, floc=0),
+        "genextreme": genextreme.fit(gusts)
+    }
+
+    # GoF statistics
+    gof = {
+        dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
+        for dist, params in fits.items()
+    }
+
+    station_results.append({
+        "platform_id": station_id,
+        "n_obs": len(gusts),
+        "gof": {dist: gof[dist].statistic for dist in fits},
+        "best_fit": min(fits, key=lambda d: gof[d].statistic)
+    })
+
+
+#Step 5: Outlier Detection
+#Identify and remove outliers using statistical thresholds or predefined rules.
+
+# Identify outliers based on fitted distributions
+def identify_outliers(data, distribution, params, threshold=0.01):
+    cdf_values = distribution.cdf(data, *params)
+    return (cdf_values < threshold) | (cdf_values > (1 - threshold))
+
+# Apply outlier detection
+outlier_flags = []
+for station_id, group in stations:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:
+        outlier_flags.append(pd.Series(False, index=group.index))
+        continue
+
+    best_fit = station_results_df.loc[
+        station_results_df["platform_id"] == station_id, "best_fit"
+    ].values[0]
+    params = fits[best_fit]
+    dist = eval(best_fit)
     
-    # Extract variables (excluding the first one, "time_bounds")
-    variables = {var: dataset.variables[var][:] for var in dataset.variables if var != "time_bounds"}
-    variables["stormname"] = filename
-    variables["datebeg"] = pd.to_datetime(dataset.variables["time_bounds"][:][0], unit="h")
-    variables["dateend"] = pd.to_datetime(dataset.variables["time_bounds"][:][1], unit="h")
+    outliers = identify_outliers(gusts, dist, params)
+    outlier_flags.append(pd.Series(outliers, index=group.index))
+
+met_office_obs["is_outlier"] = pd.concat(outlier_flags)
+
+
+station_results_df = pd.DataFrame(station_results)
+print(station_results_df.head())
+
+
+
+
+
+Here’s the continuation of the R-to-Python translation for steps 4 through 7. These steps focus on advanced statistical analysis, outlier detection, and visualizations.
+
+Step 4: Per-Station Statistical Testing
+We'll calculate station-wise statistics, fit distributions, and check goodness-of-fit (GoF) for each station.
+
+python
+Copy
+Edit
+# Per-station statistical testing
+stations = met_office_obs.groupby("platform_id")
+
+station_results = []
+for station_id, group in stations:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:  # Ensure enough data points for fitting
+        continue
+
+    # Fit distributions
+    fits = {
+        "gamma": gamma.fit(gusts),
+        "lognorm": lognorm.fit(gusts, floc=0),
+        "genextreme": genextreme.fit(gusts)
+    }
+
+    # GoF statistics
+    gof = {
+        dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
+        for dist, params in fits.items()
+    }
+
+    station_results.append({
+        "platform_id": station_id,
+        "n_obs": len(gusts),
+        "gof": {dist: gof[dist].statistic for dist in fits},
+        "best_fit": min(fits, key=lambda d: gof[d].statistic)
+    })
+
+station_results_df = pd.DataFrame(station_results)
+print(station_results_df.head())
+Step 5: Outlier Detection
+Identify and remove outliers using statistical thresholds or predefined rules.
+
+python
+Copy
+Edit
+# Identify outliers based on fitted distributions
+def identify_outliers(data, distribution, params, threshold=0.01):
+    cdf_values = distribution.cdf(data, *params)
+    return (cdf_values < threshold) | (cdf_values > (1 - threshold))
+
+# Apply outlier detection
+outlier_flags = []
+for station_id, group in stations:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:
+        outlier_flags.append(pd.Series(False, index=group.index))
+        continue
+
+    best_fit = station_results_df.loc[
+        station_results_df["platform_id"] == station_id, "best_fit"
+    ].values[0]
+    params = fits[best_fit]
+    dist = eval(best_fit)
     
-    # Convert time to UTC and wind gusts to km/h
-    variables["time"] = pd.to_datetime(variables["time"] * 3600, unit="s", utc=True)
-    if "max_wind_gust" in variables:
-        variables["max_wind_gust"] *= 3.6  # Convert to km/h
+    outliers = identify_outliers(gusts, dist, params)
+    outlier_flags.append(pd.Series(outliers, index=group.index))
+
+met_office_obs["is_outlier"] = pd.concat(outlier_flags)
+
+#Step 6: Distribution Comparison by Storm
+#Compare the wind gust distributions across different storms.
+# Group by storm name and fit distributions
+storm_results = []
+storms = met_office_obs.groupby("stormname")
+
+for storm, group in storms:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:
+        continue
+
+    # Fit distributions
+    fits = {
+        "gamma": gamma.fit(gusts),
+        "lognorm": lognorm.fit(gusts, floc=0),
+        "genextreme": genextreme.fit(gusts)
+    }
+
+    # Compare GoF statistics
+    gof = {
+        dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
+        for dist, params in fits.items()
+    }
+
+    storm_results.append({
+        "stormname": storm,
+        "n_obs": len(gusts),
+        "gof": {dist: gof[dist].statistic for dist in fits},
+        "best_fit": min(fits, key=lambda d: gof[d].statistic)
+    })
+
+storm_results_df = pd.DataFrame(storm_results)
+print(storm_results_df.head())
+
+
+#
+Here’s the continuation of the R-to-Python translation for steps 4 through 7. These steps focus on advanced statistical analysis, outlier detection, and visualizations.
+
+Step 4: Per-Station Statistical Testing
+We'll calculate station-wise statistics, fit distributions, and check goodness-of-fit (GoF) for each station.
+
+python
+Copy
+Edit
+# Per-station statistical testing
+stations = met_office_obs.groupby("platform_id")
+
+station_results = []
+for station_id, group in stations:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:  # Ensure enough data points for fitting
+        continue
+
+    # Fit distributions
+    fits = {
+        "gamma": gamma.fit(gusts),
+        "lognorm": lognorm.fit(gusts, floc=0),
+        "genextreme": genextreme.fit(gusts)
+    }
+
+    # GoF statistics
+    gof = {
+        dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
+        for dist, params in fits.items()
+    }
+
+    station_results.append({
+        "platform_id": station_id,
+        "n_obs": len(gusts),
+        "gof": {dist: gof[dist].statistic for dist in fits},
+        "best_fit": min(fits, key=lambda d: gof[d].statistic)
+    })
+
+station_results_df = pd.DataFrame(station_results)
+print(station_results_df.head())
+Step 5: Outlier Detection
+Identify and remove outliers using statistical thresholds or predefined rules.
+
+python
+Copy
+Edit
+# Identify outliers based on fitted distributions
+def identify_outliers(data, distribution, params, threshold=0.01):
+    cdf_values = distribution.cdf(data, *params)
+    return (cdf_values < threshold) | (cdf_values > (1 - threshold))
+
+# Apply outlier detection
+outlier_flags = []
+for station_id, group in stations:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:
+        outlier_flags.append(pd.Series(False, index=group.index))
+        continue
+
+    best_fit = station_results_df.loc[
+        station_results_df["platform_id"] == station_id, "best_fit"
+    ].values[0]
+    params = fits[best_fit]
+    dist = eval(best_fit)
     
-    # Convert to DataFrame and append to the main dataset
-    temp_df = pd.DataFrame(variables)
-    met_office_obs = pd.concat([met_office_obs, temp_df])
+    outliers = identify_outliers(gusts, dist, params)
+    outlier_flags.append(pd.Series(outliers, index=group.index))
 
-# Remove duplicates and impossible values
-met_office_obs = met_office_obs.drop_duplicates(subset=["time", "platform_id"])
-met_office_obs = met_office_obs[met_office_obs["max_wind_gust"] > 0]
+met_office_obs["is_outlier"] = pd.concat(outlier_flags)
+Step 6: Distribution Comparison by Storm
+Compare the wind gust distributions across different storms.
 
-# Unique values (for verification)
-print(f"Unique platforms: {met_office_obs['platform_id'].nunique()}")
-print(f"Unique storms: {met_office_obs['stormname'].nunique()}")
+python
+Copy
+Edit
+# Group by storm name and fit distributions
+storm_results = []
+storms = met_office_obs.groupby("stormname")
 
-# 2/7. Plotting the observation network
-# Define function to calculate the most frequent value
-def most_frequent(x):
-    return pd.Series(x).value_counts().idxmax()
+for storm, group in storms:
+    gusts = group["max_wind_gust"].dropna()
+    if len(gusts) < 20:
+        continue
 
-# Group by platform and calculate statistics
-platforms = (
-    met_office_obs.groupby("platform_id")
-    .agg(
-        NObs=("platform_id", "size"),
-        longitude=("longitude", most_frequent),
-        latitude=("latitude", most_frequent),
-        altitude=("altitude", most_frequent),
-        StationStart=("time", "min"),
-        StationEnd=("time", "max")
-    )
-    .reset_index()
-)
+    # Fit distributions
+    fits = {
+        "gamma": gamma.fit(gusts),
+        "lognorm": lognorm.fit(gusts, floc=0),
+        "genextreme": genextreme.fit(gusts)
+    }
 
-# Visualization with folium
-map_osm = folium.Map(location=[50, 0], zoom_start=5)
-marker_cluster = MarkerCluster().add_to(map_osm)
+    # Compare GoF statistics
+    gof = {
+        dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
+        for dist, params in fits.items()
+    }
+
+    storm_results.append({
+        "stormname": storm,
+        "n_obs": len(gusts),
+        "gof": {dist: gof[dist].statistic for dist in fits},
+        "best_fit": min(fits, key=lambda d: gof[d].statistic)
+    })
+
+storm_results_df = pd.DataFrame(storm_results)
+print(storm_results_df.head())
+
+#Step 7: Visualization of Results
+#Finally, visualize the results with Python libraries.
+
+#7.1: Boxplot of Wind Gusts by Storm
+
+import seaborn as sns
+
+plt.figure(figsize=(12, 6))
+sns.boxplot(data=met_office_obs, x="stormname", y="max_wind_gust", showfliers=False)
+plt.xticks(rotation=90)
+plt.title("Distribution of Wind Gusts by Storm")
+plt.ylabel("Max Wind Gust (km/h)")
+plt.xlabel("Storm Name")
+plt.tight_layout()
+plt.show()
+
+
+#7.2: Outlier Marking on Map
+#Visualize stations with outliers using a different marker color on the folium map.
+
+map_osm_outliers = folium.Map(location=[50, 0], zoom_start=5)
+marker_cluster = MarkerCluster().add_to(map_osm_outliers)
+
 for _, row in platforms.iterrows():
+    has_outliers = met_office_obs[
+        (met_office_obs["platform_id"] == row["platform_id"]) & (met_office_obs["is_outlier"])
+    ].any()
+
+    color = "red" if has_outliers else "blue"
+
     folium.CircleMarker(
         location=(row["latitude"], row["longitude"]),
         radius=5,
-        color="blue",
+        color=color,
         fill=True,
         fill_opacity=0.7,
         tooltip=f"ID: {row['platform_id']}, NObs: {row['NObs']}"
     ).add_to(marker_cluster)
 
-map_osm.save(os.path.join(dir_out, "GroundStations.html"))
-
-# 3/7. Study the distribution of observations
-from scipy.stats import kstest
-
-# Fit distributions and goodness-of-fit
-gusts = met_office_obs["max_wind_gust"].dropna()
-fits = {
-    "gamma": gamma.fit(gusts),
-    "lognorm": lognorm.fit(gusts, floc=0),
-    "genextreme": genextreme.fit(gusts)
-}
-
-# Goodness-of-fit statistics
-gof = {
-    dist: kstest(gusts, lambda x: eval(dist).cdf(x, *params))
-    for dist, params in fits.items()
-}
-
-print(gof)
-
-# Plot distributions
-x = np.linspace(gusts.min(), gusts.max(), 1000)
-for dist, params in fits.items():
-    plt.plot(x, eval(dist).pdf(x, *params), label=dist)
-plt.hist(gusts, bins=50, density=True, alpha=0.5)
-plt.legend()
-plt.title("Fitted Distributions")
-plt.show()
+map_osm_outliers.save(os.path.join(dir_out, "StationsWithOutliers.html"))
